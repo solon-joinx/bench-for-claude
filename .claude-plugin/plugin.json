@@ -1,0 +1,32 @@
+{
+  "name": "bench-for-claude",
+  "version": "0.1.0",
+  "description": "Your Claude accounts on the bench, ready to sub in: every account's usage above the prompt, and one-command switching.",
+  "author": {
+    "name": "Solon Lin"
+  },
+  "homepage": "https://github.com/solon-joinx/bench-for-claude",
+  "repository": "https://github.com/solon-joinx/bench-for-claude",
+  "license": "MIT",
+  "keywords": [
+    "accounts",
+    "multi-account",
+    "switch",
+    "usage",
+    "rate-limit"
+  ],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "language": {
+      "type": "string",
+      "title": "Display language",
+      "description": "auto follows Claude Code's `language` setting and falls back to English.",
+      "default": "auto",
+      "options": [
+        "auto",
+        "en",
+        "zh-TW"
+      ]
+    }
+  }
+}

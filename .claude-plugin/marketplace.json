@@ -1,0 +1,14 @@
+{
+  "name": "bench-for-claude-marketplace",
+  "description": "bench-for-claude: see every Claude account's usage and switch accounts in Claude Code",
+  "owner": {
+    "name": "SolonLin"
+  },
+  "plugins": [
+    {
+      "name": "bench-for-claude",
+      "source": "./",
+      "description": "See every Claude account's usage above the prompt and switch accounts with one command"
+    }
+  ]
+}

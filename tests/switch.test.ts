@@ -8,6 +8,11 @@ const LIVE = 'Claude Code-credentials'
 const VAULT = 'bench-for-claude'
 const CONFIG = '/home/me/.claude.json'
 
+const WIN_HOME = 'C:\\Users\\me'
+const WIN_CONFIG = `${WIN_HOME}\\.claude.json`
+const WIN_LIVE = `${WIN_HOME}\\.claude\\.credentials.json`
+const WIN_VAULT = `${WIN_HOME}\\.claude\\bench-for-claude`
+
 const WORK = { id: 'acc-work', email: 'me@work.example' }
 const HOME = { id: 'acc-home', email: 'me@home.example', alias: 'home' }
 
@@ -19,20 +24,38 @@ const profile = (account: { id: string; email: string }) =>
 const unhex = (hex: string) => decodeURIComponent(hex.replace(/../g, '%$&'))
 
 /** A fake Keychain, global config and store behind the engine calls the mod makes. */
-const machine = (on: On, options: { failConfigWrite?: boolean; view?: string } = {}) => {
+const machine = (on: On, options: { failConfigWrite?: boolean; view?: string; windows?: boolean } = {}) => {
   const keychain = new Map<string, string>()
   const files = new Map<string, string>()
   const store = new Map<string, unknown>()
+  const commands: (readonly string[])[] = []
 
-  on('env.get', (_, e) => ({ value: ({ HOME: '/home/me' } as Record<string, string>)[e.name] }))
+  const env: Record<string, string> = options.windows
+    ? { OS: 'Windows_NT', USERPROFILE: WIN_HOME }
+    : { HOME: '/home/me' }
+  on('env.get', (_, e) => ({ value: env[e.name] }))
   on('clock.now', () => ({ value: NOW }))
   on('store.get', (_, e) => ({ value: store.get(e.key) }))
   on('store.set', (_, e) => (store.set(e.key, e.value), { value: undefined }))
   on('store.delete', (_, e) => (store.delete(e.key), { value: undefined }))
-  on('fs.read', (_, e) => ({ value: files.get(e.path) ?? '' }))
+  // Windows-side calls answer as the real ones do: a missing file rejects. On
+  // the macOS host the tests run on, the engine reads `C:\\...` as relative and
+  // puts the working directory in front; take it off again.
+  const at = (path: string) => (options.windows ? path.slice(path.indexOf(WIN_HOME)) : path)
+  on('fs.read', (_, e) => {
+    const text = files.get(at(e.path))
+    if (text === undefined && options.windows) return { deny: 'ENOENT' }
+    return { value: text ?? '' }
+  })
+  on('fs.exists', (_, e) => ({ value: files.has(at(e.path)) }))
+  on('fs.list', (_, e) => ({
+    value: [...files.keys()]
+      .filter(path => path.startsWith(`${at(e.path)}\\`))
+      .map(path => ({ name: path.slice(at(e.path).length + 1), kind: 'file', size: 0, mtimeMs: 0, isLink: false })),
+  }))
   on('fs.write', (_, e) => {
-    if (options.failConfigWrite) return { deny: 'disk full' }
-    files.set(e.path, e.text)
+    if (options.failConfigWrite && e.path.endsWith('.claude.json')) return { deny: 'disk full' }
+    files.set(at(e.path), e.text)
     return { value: undefined }
   })
   // Session state: the signed-in account is WORK; both accounts are known.
@@ -56,8 +79,13 @@ const machine = (on: On, options: { failConfigWrite?: boolean; view?: string } =
       ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
     const ok = (stdout = '') => result(0, stdout)
     const missing = result(44)
+    commands.push(e.argv)
 
     if (command === 'chmod') return ok()
+    if (command === 'powershell.exe') {
+      files.delete(e.init?.env?.BENCH_FOR_CLAUDE_PATH ?? '')
+      return ok()
+    }
     if (sub === 'find-generic-password') {
       const service = flag('-s')!
       const account = args.includes('-a') ? flag('-a') : service === LIVE ? 'me' : undefined
@@ -81,7 +109,7 @@ const machine = (on: On, options: { failConfigWrite?: boolean; view?: string } =
   // The registry knows both accounts.
   store.set('accounts', { [WORK.id]: WORK, [HOME.id]: HOME })
 
-  return { keychain, files, store, state, toasts }
+  return { keychain, files, store, state, toasts, commands }
 }
 
 /** Runs `/accounts <args>` and returns what it printed; the engine fills origin and presentation. */
@@ -136,6 +164,68 @@ test('an account with no saved login, or an expired one, is refused untouched', 
 
   expect(await run($, 'use me@work.example')).toMatch(/already signed in/)
   expect(keychain.get(`${LIVE}|me`)).toBe(original)
+})
+
+test('on Windows, switching swaps the login in the credentials file and keeps the vault in files', async ($, on) => {
+  const { files, store, commands } = machine(on, { windows: true })
+  const pluginSecrets = { 'other@market': { token: 'keep-me' } }
+  const original = JSON.stringify({ claudeAiOauth: login('work-new'), pluginSecrets })
+  files.set(WIN_LIVE, original)
+  files.set(`${WIN_VAULT}\\${WORK.id}.json`, JSON.stringify({ oauth: login('work-old'), profile: profile(WORK) }))
+  files.set(`${WIN_VAULT}\\${HOME.id}.json`, JSON.stringify({ oauth: login('home'), profile: profile(HOME) }))
+  files.set(WIN_CONFIG, JSON.stringify({ numStartups: 3, oauthAccount: profile(WORK) }, null, 2))
+
+  expect(await run($, 'use home')).toMatch(/^Switched to home/)
+
+  const live = JSON.parse(files.get(WIN_LIVE)!)
+  expect(live.claudeAiOauth.refreshToken).toBe('refresh-home')
+  expect(live.pluginSecrets).toEqual(pluginSecrets)
+  expect(files.get(`${WIN_VAULT}\\backup-before-switch.json`)).toBe(original)
+  expect(JSON.parse(files.get(`${WIN_VAULT}\\${WORK.id}.json`)!).oauth.refreshToken).toBe('refresh-work-new')
+
+  const config = JSON.parse(files.get(WIN_CONFIG)!)
+  expect(config.oauthAccount.accountUuid).toBe(HOME.id)
+  expect(config.numStartups).toBe(3)
+  expect(store.get('switchedAt')).toBe(NOW)
+  // Nothing macOS-only ran.
+  expect(commands.some(argv => argv[0] === 'security' || argv[0] === 'chmod')).toBe(false)
+})
+
+test('on Windows, a failed config write puts the credentials file back', async ($, on) => {
+  const { files } = machine(on, { windows: true, failConfigWrite: true })
+  const original = JSON.stringify({ claudeAiOauth: login('work') })
+  files.set(WIN_LIVE, original)
+  files.set(`${WIN_VAULT}\\${HOME.id}.json`, JSON.stringify({ oauth: login('home'), profile: profile(HOME) }))
+  files.set(WIN_CONFIG, JSON.stringify({ oauthAccount: profile(WORK) }))
+
+  expect(await run($, 'use home')).toMatch(/^Switch failed/)
+  expect(files.get(WIN_LIVE)).toBe(original)
+})
+
+test('on Windows, with no credentials file, switching is unsupported', async ($, on) => {
+  const { files } = machine(on, { windows: true })
+  files.set(`${WIN_VAULT}\\${HOME.id}.json`, JSON.stringify({ oauth: login('home'), profile: profile(HOME) }))
+  files.set(WIN_CONFIG, JSON.stringify({ oauthAccount: profile(WORK) }))
+
+  expect(await run($, 'use home')).toMatch(/needs macOS or Windows/)
+})
+
+test('on Windows, the vault is listed from its folder and an entry removed through PowerShell', async ($, on) => {
+  const { files, store } = machine(on, { windows: true })
+  files.set(WIN_LIVE, JSON.stringify({ claudeAiOauth: login('work') }))
+  files.set(`${WIN_VAULT}\\${HOME.id}.json`, JSON.stringify({ oauth: login('home'), profile: profile(HOME), alias: 'home' }))
+  files.set(`${WIN_VAULT}\\backup-before-switch.json`, '{}')
+  files.set(WIN_CONFIG, JSON.stringify({ oauthAccount: profile(WORK) }))
+  store.set('accounts', { [WORK.id]: WORK })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('settings.read', () => ({ value: {} }))
+
+  await $.session.start({ cwd: WIN_HOME } as Parameters<Engine['session']['start']>[0])
+  expect(Object.keys(store.get('accounts') as object).sort()).toEqual([HOME.id, WORK.id].sort())
+
+  expect(await run($, 'remove home')).toMatch(/home/)
+  expect(files.has(`${WIN_VAULT}\\${HOME.id}.json`)).toBe(false)
+  expect(files.has(`${WIN_VAULT}\\backup-before-switch.json`)).toBe(true)
 })
 
 /** Raises one rate-limit measurement, as the engine does after a reply. */

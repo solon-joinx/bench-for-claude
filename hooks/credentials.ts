@@ -1,27 +1,41 @@
 import type { EngineInterface } from 'claude-code'
 
 import type { Profile } from './account'
+import { host } from './platform'
 
-// Credentials live in the macOS Keychain and only ever pass through this file.
+// Credentials only ever pass through this file. They are kept where Claude
+// Code keeps its own login on the platform:
 //
-// Claude Code's own item (`Claude Code-credentials`) holds one JSON object:
-// `claudeAiOauth` (the login) next to other entries such as `pluginSecrets`.
-// Switching replaces `claudeAiOauth` alone and keeps everything else.
+// - macOS: the Keychain. Claude Code's item is `Claude Code-credentials`; the
+//   vault keeps one item per account under its own service (account = the
+//   account id), and one more for the backup.
+// - Windows: files in the config folder (~\.claude). Claude Code's item is
+//   `.credentials.json`; the vault keeps one `<account id>.json` per account in
+//   `bench-for-claude\` beside it, and `backup-before-switch.json`. Like Claude
+//   Code's own file they are plain JSON, private through the profile folder's
+//   permissions.
 //
-// The vault keeps one item per account under its own service (account = the
-// account id), holding a VaultEntry: the login, the profile and the alias.
-// It is the source of truth for which accounts can be switched to: the
-// plugin store is tied to how the plugin was installed, the Keychain is not,
-// so a rename or a reinstall loses nothing. One more item holds a backup of
-// Claude Code's whole item, taken before every switch.
+// Claude Code's item holds one JSON object: `claudeAiOauth` (the login) next
+// to other entries such as `pluginSecrets`. Switching replaces `claudeAiOauth`
+// alone and keeps everything else.
 //
-// Values are written as hex through `security -i` on stdin, so no secret ever
-// appears in a process's arguments. Nothing here logs or returns a token to
-// anything but the caller.
+// A vault entry is a VaultEntry: the login, the profile and the alias. The
+// vault is the source of truth for which accounts can be switched to: the
+// plugin store is tied to how the plugin was installed, the vault is not, so a
+// rename or a reinstall loses nothing. The backup is Claude Code's whole item,
+// taken before every switch.
+//
+// On macOS values are written as hex through `security -i` on stdin, so no
+// secret ever appears in a process's arguments. Nothing here logs or returns a
+// token to anything but the caller.
 
 const LIVE_SERVICE = 'Claude Code-credentials'
 const VAULT_SERVICE = 'bench-for-claude'
 const BACKUP_ACCOUNT = 'backup:before-switch'
+
+const LIVE_FILE = '.credentials.json'
+const VAULT_DIR = 'bench-for-claude'
+const BACKUP_FILE = 'backup-before-switch.json'
 
 export type OAuth = Record<string, unknown> & { refreshTokenExpiresAt?: number }
 type LiveItem = Record<string, unknown> & { claudeAiOauth?: OAuth }
@@ -32,6 +46,23 @@ export type VaultEntry = {
   profile?: Profile
   alias?: string
 }
+
+/**
+ * Where Claude Code's item and the vault are kept on this machine. On Windows,
+ * the config folder's files: Claude Code's item and the vault folder.
+ */
+type Place = { kind: 'keychain' } | { kind: 'files'; live: string; vault: string; join: (...parts: string[]) => string }
+
+/** Where logins are kept, or undefined when there is no home folder to find files in. */
+async function placeOf($: EngineInterface): Promise<Place | undefined> {
+  const { isWindows, home, join } = await host($)
+  if (!isWindows) return { kind: 'keychain' }
+  if (!home) return undefined
+  const configDir = join(home, '.claude')
+  return { kind: 'files', live: join(configDir, LIVE_FILE), vault: join(configDir, VAULT_DIR), join }
+}
+
+// ---- macOS: the Keychain, through `security` ----
 
 /** UTF-8 bytes of `text` as hex, without TextEncoder (the hooks runtime has no DOM or Node). */
 const hex = (text: string): string =>
@@ -67,22 +98,108 @@ async function liveAccount($: EngineInterface): Promise<string | undefined> {
   return exitCode === 0 ? /"acct"<blob>="([^"]*)"/.exec(stdout)?.[1] : undefined
 }
 
+// ---- Windows: files in the config folder ----
+
+async function readFile($: EngineInterface, path: string): Promise<string | undefined> {
+  try {
+    return await $.fs.read(path)
+  } catch {
+    return undefined
+  }
+}
+
+async function writeFile($: EngineInterface, path: string, text: string): Promise<void> {
+  await $.fs.write(path, text)
+  if ((await readFile($, path)) !== text) throw new Error(`Write failed (${path})`)
+}
+
+/** A vault entry's file. Account ids are Claude Code's account UUIDs, safe as file names. */
+const entryPath = (place: Extract<Place, { kind: 'files' }>, account: string): string =>
+  place.join(place.vault, account === BACKUP_ACCOUNT ? BACKUP_FILE : `${account}.json`)
+
+// ---- Either place ----
+
+/** Whether Claude Code's item is there, without reading the secret. */
+async function hasLive($: EngineInterface, place: Place): Promise<boolean> {
+  if (place.kind === 'files') return $.fs.exists(place.live)
+  return (await liveAccount($)) !== undefined
+}
+
+async function readLiveRaw($: EngineInterface, place: Place): Promise<string | undefined> {
+  return place.kind === 'files' ? readFile($, place.live) : find($, LIVE_SERVICE)
+}
+
+async function writeLiveRaw($: EngineInterface, place: Place, raw: string): Promise<void> {
+  if (place.kind === 'files') return writeFile($, place.live, raw)
+  const account = await liveAccount($)
+  if (account === undefined) throw new Error('No Claude Code login in the Keychain')
+  await store($, LIVE_SERVICE, account, raw)
+}
+
+/** The vault entry under `account`: an account id, or the backup. */
+async function readEntry($: EngineInterface, place: Place, account: string): Promise<string | undefined> {
+  return place.kind === 'files' ? readFile($, entryPath(place, account)) : find($, VAULT_SERVICE, account)
+}
+
+async function writeEntry($: EngineInterface, place: Place, account: string, value: string): Promise<void> {
+  if (place.kind === 'files') return writeFile($, entryPath(place, account), value)
+  await store($, VAULT_SERVICE, account, value)
+}
+
+async function removeEntry($: EngineInterface, place: Place, account: string): Promise<void> {
+  if (place.kind === 'keychain') {
+    await $.process.run(['security', 'delete-generic-password', '-s', VAULT_SERVICE, '-a', account])
+    return
+  }
+  // The engine has no file delete. The path goes through the environment, so
+  // no quoting of it reaches PowerShell's parser.
+  await $.process.run(
+    ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
+      'Remove-Item -LiteralPath $env:BENCH_FOR_CLAUDE_PATH -Force -ErrorAction SilentlyContinue'],
+    { env: { BENCH_FOR_CLAUDE_PATH: entryPath(place, account) } },
+  )
+}
+
+/** Ids of every account in the vault, the backup left out. Reads no secret. */
+async function listEntries($: EngineInterface, place: Place): Promise<string[]> {
+  if (place.kind === 'files') {
+    let entries: Awaited<ReturnType<EngineInterface['fs']['list']>>
+    try {
+      entries = await $.fs.list(place.vault)
+    } catch {
+      return []
+    }
+    return entries.flatMap(({ name, kind }) =>
+      kind === 'file' && name.endsWith('.json') && name !== BACKUP_FILE ? [name.slice(0, -'.json'.length)] : [])
+  }
+  const { exitCode, stdout } = await $.process.run(['security', 'dump-keychain'])
+  if (exitCode !== 0) return []
+  return stdout.split(/^keychain: /m).flatMap(item => {
+    if (!item.includes(`"svce"<blob>="${VAULT_SERVICE}"`)) return []
+    const account = /"acct"<blob>="([^"]*)"/.exec(item)?.[1]
+    return account && account !== BACKUP_ACCOUNT ? [account] : []
+  })
+}
+
 /**
  * Whether this machine keeps the login where this mod can switch it: the macOS
- * Keychain under the default service. A custom CLAUDE_CONFIG_DIR files it under
- * another service name, which this version does not handle yet.
+ * Keychain under the default service, or the default config folder on Windows.
+ * A custom CLAUDE_CONFIG_DIR moves the login elsewhere, which this version
+ * does not handle yet. Elsewhere (Linux) `security` does not run, so: no.
  */
 export async function isSupported($: EngineInterface): Promise<boolean> {
   if (await $.env.get('CLAUDE_CONFIG_DIR')) return false
   try {
-    return (await liveAccount($)) !== undefined
+    const place = await placeOf($)
+    return place !== undefined && (await hasLive($, place))
   } catch {
     return false
   }
 }
 
 async function readLive($: EngineInterface): Promise<LiveItem | undefined> {
-  const raw = await find($, LIVE_SERVICE)
+  const place = await placeOf($)
+  const raw = place && (await readLiveRaw($, place))
   if (raw === undefined) return undefined
   try {
     return JSON.parse(raw) as LiveItem
@@ -91,13 +208,14 @@ async function readLive($: EngineInterface): Promise<LiveItem | undefined> {
   }
 }
 
-/** The signed-in login, or undefined when there is none in the Keychain. */
+/** The signed-in login, or undefined when there is none. */
 export async function readLiveOAuth($: EngineInterface): Promise<OAuth | undefined> {
   return (await readLive($))?.claudeAiOauth
 }
 
 export async function readVault($: EngineInterface, accountId: string): Promise<VaultEntry | undefined> {
-  const raw = await find($, VAULT_SERVICE, accountId)
+  const place = await placeOf($)
+  const raw = place && (await readEntry($, place, accountId))
   if (raw === undefined) return undefined
   try {
     const entry = JSON.parse(raw) as VaultEntry
@@ -108,18 +226,15 @@ export async function readVault($: EngineInterface, accountId: string): Promise<
 }
 
 async function writeVault($: EngineInterface, accountId: string, entry: VaultEntry): Promise<void> {
-  await store($, VAULT_SERVICE, accountId, JSON.stringify(entry))
+  const place = await placeOf($)
+  if (place === undefined) throw new Error('No place to save logins on this machine')
+  await writeEntry($, place, accountId, JSON.stringify(entry))
 }
 
-/** Ids of every account in the vault. Reads item attributes only, never their data. */
+/** Ids of every account in the vault. */
 export async function listVault($: EngineInterface): Promise<string[]> {
-  const { exitCode, stdout } = await $.process.run(['security', 'dump-keychain'])
-  if (exitCode !== 0) return []
-  return stdout.split(/^keychain: /m).flatMap(item => {
-    if (!item.includes(`"svce"<blob>="${VAULT_SERVICE}"`)) return []
-    const account = /"acct"<blob>="([^"]*)"/.exec(item)?.[1]
-    return account && account !== BACKUP_ACCOUNT ? [account] : []
-  })
+  const place = await placeOf($)
+  return place ? listEntries($, place) : []
 }
 
 /** Keeps the alias next to the login, so it survives a reinstall. */
@@ -129,7 +244,8 @@ export async function setVaultAlias($: EngineInterface, accountId: string, alias
 }
 
 export async function deleteVault($: EngineInterface, accountId: string): Promise<void> {
-  await $.process.run(['security', 'delete-generic-password', '-s', VAULT_SERVICE, '-a', accountId])
+  const place = await placeOf($)
+  if (place) await removeEntry($, place, accountId)
 }
 
 /**
@@ -152,15 +268,15 @@ export async function capture($: EngineInterface, accountId: string, profile: Pr
  * the whole item up. Returns a function that puts the backup back.
  */
 export async function installLive($: EngineInterface, oauth: OAuth): Promise<() => Promise<void>> {
-  const account = await liveAccount($)
-  const raw = await find($, LIVE_SERVICE)
-  if (account === undefined || raw === undefined) throw new Error('No Claude Code login in the Keychain')
+  const place = await placeOf($)
+  const raw = place && (await readLiveRaw($, place))
+  if (place === undefined || raw === undefined) throw new Error('No Claude Code login to replace')
 
-  await store($, VAULT_SERVICE, BACKUP_ACCOUNT, raw)
+  await writeEntry($, place, BACKUP_ACCOUNT, raw)
   const item = JSON.parse(raw) as LiveItem
-  await store($, LIVE_SERVICE, account, JSON.stringify({ ...item, claudeAiOauth: oauth }))
+  await writeLiveRaw($, place, JSON.stringify({ ...item, claudeAiOauth: oauth }))
 
-  return async () => store($, LIVE_SERVICE, account, raw)
+  return async () => writeLiveRaw($, place, raw)
 }
 
 /** A saved login whose refresh token has expired needs a fresh /login. */

@@ -6,7 +6,7 @@ import type { Account, Snapshot } from '../types'
 //   accounts        Record<accountId, Account>   every account seen, with its alias
 //   snapshot:<id>   Snapshot                     that account's last usage reading
 // The store is a cache: it belongs to one installation of the plugin. Logins,
-// profiles and aliases are kept in the Keychain vault (credentials.ts), and the
+// profiles and aliases are kept in the vault (credentials.ts), and the
 // registry is rebuilt from it at session start.
 const ACCOUNTS = 'accounts'
 const snapshotKey = (id: string) => `snapshot:${id}`

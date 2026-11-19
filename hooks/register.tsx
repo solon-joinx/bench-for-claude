@@ -57,7 +57,7 @@ async function track($: EngineInterface): Promise<Account | null> {
   return account
 }
 
-/** Adds every account in the Keychain vault the store does not know yet, with its alias. */
+/** Adds every account in the vault the store does not know yet, with its alias. */
 async function restoreFromVault($: EngineInterface): Promise<void> {
   const known = await loadRegistry($)
   for (const id of await listVault($)) {

@@ -2,6 +2,8 @@ import type { EngineInterface } from 'claude-code'
 
 import type { Account } from '../types'
 
+import { host } from './platform'
+
 const PLANS: Record<string, string> = {
   claude_pro: 'Pro',
   claude_max: 'Max',
@@ -23,12 +25,12 @@ const plan = (oauth: Record<string, unknown>): string | undefined => {
 const text = (value: unknown): string | undefined =>
   typeof value === 'string' && value !== '' ? value : undefined
 
-/** Claude Code keeps its global config beside CLAUDE_CONFIG_DIR, else in $HOME. */
+/** Claude Code keeps its global config beside CLAUDE_CONFIG_DIR, else in the home folder. */
 async function configPath($: EngineInterface): Promise<string | undefined> {
+  const { home, join } = await host($)
   const dir = await $.env.get('CLAUDE_CONFIG_DIR')
-  if (dir) return `${dir}/.claude.json`
-  const home = await $.env.get('HOME')
-  return home ? `${home}/.claude.json` : undefined
+  if (dir) return join(dir, '.claude.json')
+  return home ? join(home, '.claude.json') : undefined
 }
 
 export type Profile = Record<string, unknown>
@@ -75,6 +77,7 @@ export async function writeProfile($: EngineInterface, profile: Profile): Promis
   if (path === undefined) throw new Error('No global config path')
   const config = JSON.parse(await $.fs.read(path)) as Record<string, unknown>
   await $.fs.write(path, JSON.stringify({ ...config, oauthAccount: profile }, null, 2))
-  // The file is private to the user; keep it so whatever the write did.
-  await $.process.run(['chmod', '600', path])
+  // The file is private to the user; keep it so whatever the write did. On
+  // Windows the profile folder's own permissions already keep it private.
+  if (!(await host($)).isWindows) await $.process.run(['chmod', '600', path])
 }

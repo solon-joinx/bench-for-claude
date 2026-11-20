@@ -60,7 +60,7 @@ const windowCell = (ui: Elements, window: UsageWindow, now: number, t: Messages,
 }
 
 /** One account: its header and its windows, in one line or as a block. */
-const accountBlock = (ui: Elements, snapshot: Snapshot | null, isCurrent: boolean, input: BandInput, hotkey?: string) => {
+const accountBlock = (ui: Elements, snapshot: Snapshot | null, isCurrent: boolean, input: BandInput) => {
   const { Box, Button, Text } = ui
   const { now, t } = input
   const isExpanded = input.view === 'expanded'
@@ -73,8 +73,10 @@ const accountBlock = (ui: Elements, snapshot: Snapshot | null, isCurrent: boolea
 
   const account = snapshot?.account
   const onSwitch = input.onSwitch
+  // No hotkey: a band Button's digit is pressed by a bare digit typed into an
+  // empty prompt, so a message starting with a number would switch accounts.
   const switchButton = isExpanded && !isCurrent && account && onSwitch
-    ? <Button key={`use-${account.id}`} label={t.switchButton} hotkey={hotkey} onPress={() => onSwitch(account)} />
+    ? <Button key={`use-${account.id}`} label={t.switchButton} onPress={() => onSwitch(account)} />
     : null
 
   const header = (
@@ -113,10 +115,9 @@ export const band = (input: BandInput) => {
   const currentId = current?.account?.id
   const others = accounts.filter(snapshot => snapshot.account?.id !== currentId)
 
-  // Digits 1-9 press the switch buttons once the band has focus.
   const blocks = [
     accountBlock(ui, current, true, input),
-    ...others.map((other, index) => accountBlock(ui, other, false, input, index < 9 ? String(index + 1) : undefined)),
+    ...others.map(other => accountBlock(ui, other, false, input)),
   ]
 
   if (isExpanded) {

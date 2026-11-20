@@ -94,8 +94,9 @@ A toast warns you when the signed-in account crosses 90%.
 
 The band has an **Expand** / **Collapse** button at its end, and the expanded
 band has a **Switch** button beside each account on the bench. Click them, or
-focus the band (a click, or `ctrl+x tab`) and press `e` to expand or collapse,
-or `1`–`9` to switch.
+focus the band (a click, or `ctrl+x tab`) and press `e` to expand or collapse.
+Switching has no key of its own, so typing can never switch accounts by
+accident: click **Switch**, or use `/accounts use <account>`.
 
 ## Good to know
 

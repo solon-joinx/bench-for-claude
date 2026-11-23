@@ -16,10 +16,10 @@ See every account's usage above the prompt, and switch accounts with one command
 ● work · Max 20x  5h 62% ↻1h20m  7d 31% ↻3d  │  ○ personal  5h reset  7d 18%  [Expand]
 ```
 
-> [!IMPORTANT]
-> **macOS and Windows.** On macOS logins are kept in the Keychain; on Windows
-> they are files in your Claude config folder, as Claude Code keeps its own.
-> Linux support is planned.
+> [!NOTE]
+> **Works on macOS and Windows.** Each platform keeps saved logins where Claude
+> Code keeps its own: the Keychain on macOS, your Claude config folder on
+> Windows. Linux is not supported yet.
 
 ## The problem
 
@@ -149,7 +149,8 @@ With `auto` it follows Claude Code's `language` setting (for example
   (`bench-for-claude` / `backup:before-switch` in the Keychain, or
   `backup-before-switch.json` on Windows) and put back if the config cannot be
   written.
-- `/accounts remove` deletes that account's saved login.
+- `/accounts remove` deletes that account's saved login (on Windows through
+  PowerShell's `Remove-Item`, since the plugin runtime has no file delete).
 
 ## Development
 
@@ -163,7 +164,7 @@ claude --plugin-dir .
 | --- | --- |
 | `hooks/register.tsx` | Event wiring: session start, measurements, `/accounts`, the band |
 | `hooks/band.tsx` | Drawing the band |
-| `hooks/usage.ts` | Windows, thresholds, durations, used-up detection |
+| `hooks/usage.ts` | Usage windows, thresholds, durations, used-up detection |
 | `hooks/account.ts` | Reading and writing the signed-in profile in `~/.claude.json` |
 | `hooks/credentials.ts` | The only code that touches logins: the Keychain on macOS, files on Windows |
 | `hooks/platform.ts` | Which platform this is, the home folder, path separators |

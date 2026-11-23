@@ -5,13 +5,14 @@ import type { Account, BandView, Snapshot } from '../types'
 
 import { readAccount, readProfile, toAccount } from './account'
 import { band } from './band'
-import { capture, deleteVault, isSupported, listVault, readVault, setVaultAlias } from './credentials'
+import { capture, deleteVault, isSupported, listVault, loginState, readVault, setVaultAlias } from './credentials'
 import { messages, resolveLocale } from './i18n'
 import type { Messages } from './i18n'
 import {
-  findAccount, forget, labelOf, loadAll, loadRegistry, loadSnapshot, remember, saveSnapshot, setAlias,
+  findAccount, forget, labelOf, loadAll, loadRegistry, loadSnapshot, remember, saveSnapshot, setAlias, setNeedsLogin,
 } from './registry'
-import { isSettling, isSwitching, switchAccount } from './switch'
+import { checkLogin, confirmSwitch, isSettling, isSwitching, switchAccount } from './switch'
+import type { RevokedLogin } from './switch'
 import { crossed, exhaust, hasReset, isExhausted, percentNow, span, toWindows } from './usage'
 
 const COMMAND = 'accounts'
@@ -42,29 +43,55 @@ const nextView = (current: BandView, word: string): BandView | undefined => {
 /** Whether logins can be saved and switched on this machine. */
 let canSwitch = false
 
+/** Tells the person a login was revoked, and marks its account as needing a /login. */
+async function announce($: EngineInterface, found: RevokedLogin): Promise<void> {
+  const t = messages(await read($, locale))
+  const account = await remember($, found.account)
+  await setNeedsLogin($, account.id, true)
+  const label = labelOf(account) ?? account.id
+  const back = found.switchedBack && ((await loadRegistry($))[found.switchedBack.id] ?? found.switchedBack)
+  $.ui.toast(back ? t.revokedSwitchedBack(label, labelOf(back) ?? back.id) : t.revoked(label))
+}
+
 /**
  * Reads the signed-in account and records its profile and latest login. Runs
  * on every measurement and every tick, so a /login in any session (with or
- * without this mod) is picked up within a minute.
+ * without this mod) is picked up within a minute. A login Claude Code gave up
+ * on is reported here, and a pending switch to it undone.
  */
 async function track($: EngineInterface): Promise<Account | null> {
+  const isWatching = canSwitch && !(await isSwitching($))
+  if (isWatching) {
+    const revoked = await checkLogin($)
+    if (revoked) await announce($, revoked)
+  }
+
   const profile = await readProfile($)
   const found = toAccount(profile)
-  const account = found && (await remember($, found))
-  if (account && profile && canSwitch && !(await isSwitching($))) {
-    await capture($, account.id, profile)
+  let account = found && (await remember($, found))
+  if (account && profile && isWatching) {
+    const entry = await capture($, account.id, profile)
+    if (entry) {
+      await setNeedsLogin($, account.id, loginState(entry, await $.clock.now()) !== 'ok')
+      account = (await loadRegistry($))[account.id] ?? account
+    }
   }
   return account
 }
 
-/** Adds every account in the vault the store does not know yet, with its alias. */
+/**
+ * Adds every account in the vault the store does not know yet, with its alias,
+ * and notes which saved logins need a fresh /login.
+ */
 async function restoreFromVault($: EngineInterface): Promise<void> {
   const known = await loadRegistry($)
+  const time = await $.clock.now()
   for (const id of await listVault($)) {
-    if (known[id] !== undefined) continue
     const entry = await readVault($, id)
-    const account = toAccount(entry?.profile)
-    if (account) await remember($, { ...account, alias: entry?.alias })
+    if (entry === undefined) continue
+    const account = toAccount(entry.profile)
+    if (known[id] === undefined && account) await remember($, { ...account, alias: entry.alias })
+    await setNeedsLogin($, id, loginState(entry, time) !== 'ok')
   }
 }
 
@@ -79,15 +106,33 @@ async function storedReading($: EngineInterface, account: Account): Promise<Snap
  *
  * Sessions follow a switch on their own, but a reading taken just after one may
  * still come from the old login, so it is not recorded: the reading shown is
- * the new account's stored one.
+ * the new account's stored one. Nor is one taken while the signed-in login is
+ * dead: Claude Code may still be answering with another account's login. The
+ * first reading recorded after a switch confirms it.
  */
 async function measure($: EngineInterface, limits: Parameters<typeof toWindows>[0]): Promise<Snapshot> {
   const account = await track($)
-  if (account && (await isSettling($))) return storedReading($, account)
+  if (account && (account.needsLogin || (await isSettling($)))) return storedReading($, account)
 
   const reading: Snapshot = { account, windows: toWindows(limits), measuredAt: await $.clock.now() }
-  if (reading.windows.length > 0) await saveSnapshot($, reading)
+  if (reading.windows.length > 0) {
+    await saveSnapshot($, reading)
+    if (account) await confirmSwitch($, account.id)
+  }
   return reading
+}
+
+/**
+ * Picks up a change of signed-in account made elsewhere (another session's
+ * /login or switch, or a switch undone) and redraws from the store.
+ */
+async function follow($: EngineInterface): Promise<void> {
+  const account = await track($)
+  if (account && account.id !== (await read($, snapshot))?.account?.id) {
+    const reading = await storedReading($, account)
+    await update($, snapshot, () => reading)
+  }
+  await refreshAccounts($)
 }
 
 /** Reloads every account's reading from the store, which other sessions also write. */
@@ -120,7 +165,12 @@ async function useAccount($: EngineInterface, target: Account, t: Messages): Pro
       current: t.alreadyCurrent(label),
       notCaptured: t.notCaptured(label),
       expired: t.loginExpired(label),
+      revoked: t.loginRevoked(label),
       failed: t.switchFailed(result.reason === 'failed' ? result.detail : ''),
+    }
+    if (result.reason === 'expired' || result.reason === 'revoked') {
+      await setNeedsLogin($, target.id, true)
+      await refreshAccounts($)
     }
     return reasons[result.reason]
   }
@@ -140,7 +190,8 @@ const listText = (all: readonly Snapshot[], currentId: string | undefined, time:
     const marker = account.id === currentId ? '●' : '○'
     const email = account.alias && account.email ? ` (${account.email})` : ''
     const plan = account.plan ? ` · ${account.plan}` : ''
-    return [`${marker} ${labelOf(account) ?? t.unknownAccount}${email}${plan} — ${summary(reading, time, t)}`]
+    const state = account.needsLogin ? t.needsLogin : summary(reading, time, t)
+    return [`${marker} ${labelOf(account) ?? t.unknownAccount}${email}${plan} — ${state}`]
   }).join('\n')
 }
 
@@ -170,14 +221,7 @@ export const register: Register = (on, options) => {
     $.clock.every(TICK_MS, async () => {
       const time = await $.clock.now()
       await update($, now, () => time)
-
-      // Another session may have signed in with, or switched to, another account.
-      const account = await track($)
-      if (account && account.id !== (await read($, snapshot))?.account?.id) {
-        const reading = await storedReading($, account)
-        await update($, snapshot, () => reading)
-      }
-      await refreshAccounts($)
+      await follow($)
     })
 
     await $.command.register({
@@ -208,7 +252,10 @@ export const register: Register = (on, options) => {
 
   // A request refused for a usage limit reports no new reading, so the last one
   // can sit at 96% on an account that is out. Mark the window used up instead.
+  // A refused login is looked into right away rather than on the next tick.
   on('classic.StopFailure', async ($, e, next) => {
+    if (e.error === 'authentication_failed') await follow($).catch(() => undefined)
+
     const id = (await readAccount($))?.id
     if (e.error === 'rate_limit' && id !== undefined && !(await isSettling($))) {
       const account = (await loadAll($)).find(s => s.account?.id === id)

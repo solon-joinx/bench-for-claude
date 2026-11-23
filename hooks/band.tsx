@@ -75,7 +75,8 @@ const accountBlock = (ui: Elements, snapshot: Snapshot | null, isCurrent: boolea
   const onSwitch = input.onSwitch
   // No hotkey: a band Button's digit is pressed by a bare digit typed into an
   // empty prompt, so a message starting with a number would switch accounts.
-  const switchButton = isExpanded && !isCurrent && account && onSwitch
+  // An account whose saved login is dead gets none: the switch would be refused.
+  const switchButton = isExpanded && !isCurrent && account && !account.needsLogin && onSwitch
     ? <Button key={`use-${account.id}`} label={t.switchButton} onPress={() => onSwitch(account)} />
     : null
 
@@ -84,6 +85,7 @@ const accountBlock = (ui: Elements, snapshot: Snapshot | null, isCurrent: boolea
       {isCurrent ? <Text color="claude">●</Text> : <Text dimColor>○</Text>}
       <Text dimColor={!isCurrent}>{accountLabel(snapshot, t, isFull)}</Text>
       {stale && isFull ? <Text dimColor>{`(${stale})`}</Text> : null}
+      {account?.needsLogin ? <Text color="error">{t.needsLogin}</Text> : null}
       {switchButton}
     </Box>
   )

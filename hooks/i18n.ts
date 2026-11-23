@@ -36,6 +36,12 @@ const en = {
   notCaptured: (label: string) =>
     `${label} has no saved login yet: sign in with it once (/login) while this mod is enabled`,
   loginExpired: (label: string) => `The saved login for ${label} has expired: sign in with it again (/login)`,
+  loginRevoked: (label: string) =>
+    `The saved login for ${label} no longer works (signed out or revoked): sign in with it again (/login)`,
+  revokedSwitchedBack: (label: string, previous: string) =>
+    `The login for ${label} was revoked, so switched back to ${previous}. Sign in with ${label} again (/login) to use it.`,
+  revoked: (label: string) => `The login for ${label} was revoked: sign in with it again (/login)`,
+  needsLogin: 'needs /login',
   switchUnsupported:
     'Switching needs macOS or Windows and the default config folder (CLAUDE_CONFIG_DIR is not supported yet)',
   switchFailed: (detail: string) => `Switch failed and the login was left as it was: ${detail}`,
@@ -74,6 +80,11 @@ const zhTW: Messages = {
   alreadyCurrent: (label: string) => `${label} 已經是目前登入的帳號`,
   notCaptured: (label: string) => `${label} 還沒有儲存的登入資訊：請在啟用此 mod 時用它登入一次（/login）`,
   loginExpired: (label: string) => `${label} 儲存的登入已過期：請用它重新登入（/login）`,
+  loginRevoked: (label: string) => `${label} 儲存的登入已失效（已登出或被撤銷）：請用它重新登入（/login）`,
+  revokedSwitchedBack: (label: string, previous: string) =>
+    `${label} 的登入已被撤銷，已切回 ${previous}。要使用 ${label} 請重新登入（/login）。`,
+  revoked: (label: string) => `${label} 的登入已被撤銷：請用它重新登入（/login）`,
+  needsLogin: '需重新登入',
   switchUnsupported: '切換需要 macOS 或 Windows 與預設設定資料夾（尚不支援 CLAUDE_CONFIG_DIR）',
   switchFailed: (detail: string) => `切換失敗，登入狀態維持原樣：${detail}`,
 }

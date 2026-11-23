@@ -63,6 +63,34 @@ use it.
 /accounts use personal
 ```
 
+### Staying up to date
+
+Claude Code does not update third-party marketplaces on its own unless you
+turn that on. To get new versions automatically, run `/plugin`, open
+**Marketplaces**, pick `bench-for-claude-marketplace` and enable auto-update.
+Or set it in your user settings (`~/.claude/settings.json`; project and local
+settings are ignored for this):
+
+```json
+"extraKnownMarketplaces": {
+  "bench-for-claude-marketplace": {
+    "source": { "source": "github", "repo": "solonlin268/bench-for-claude" },
+    "autoUpdate": true
+  }
+}
+```
+
+Claude Code then checks for a new version in the background when it starts,
+and the new version is loaded the next time you start it. To update by hand
+instead:
+
+```text
+claude plugin marketplace update bench-for-claude-marketplace
+claude plugin update bench-for-claude@bench-for-claude-marketplace
+```
+
+Restart your Claude Code sessions afterwards.
+
 ## Day to day
 
 The band above the prompt shows the signed-in account first (●) and the rest
@@ -74,6 +102,7 @@ of the bench after it (○).
 | `7d 31%` | 31% of the weekly window used |
 | `reset` | The window's reset time has passed since the last reading |
 | **`limit reached`** | A request was refused for this window's limit |
+| **`needs /login`** | The account's saved login expired or was revoked; sign in with it again before switching |
 | `(12m ago)` | How old an account's last reading is |
 | Yellow / red | 80% / 95% used |
 
@@ -115,8 +144,17 @@ for a usage limit, the window is marked as used up until it resets.
 
 **Saved logins last about 30 days unused.** Each time an account is used the
 plugin saves its refreshed login. If an account sits on the bench for longer
-than its login lasts, or you sign out of all devices on claude.ai, the plugin
-asks you to `/login` with it again.
+than its login lasts, the plugin asks you to `/login` with it again.
+
+**A revoked login is caught on first use.** A saved login can be revoked while
+its account is on the bench (signing out of all devices on claude.ai, for
+instance) and still look fine, so the plugin cannot tell before you switch to
+it. When the switched-to account's first request is refused, Claude Code clears
+that login; the plugin notices, switches back to the account you came from,
+and tells you which account to `/login` with again. Until you do, that account
+shows `needs /login` and switching to it is refused. If a login is revoked
+later, while its account is in use, the plugin tells you the same way but does
+not switch for you.
 
 **Signing in elsewhere is fine.** Each sign-in has its own login, so using an
 account on another machine does not affect the copy saved here.

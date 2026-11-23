@@ -38,13 +38,13 @@ Windows, signed in with a Claude subscription (Pro, Max, Team or Enterprise).
 **1. Install.** At the prompt of a Claude Code terminal session:
 
 ```text
-/plugin install bench-for-claude --marketplace solon-joinx/bench-for-claude
+/plugin install bench-for-claude --marketplace solonlin268/bench-for-claude
 ```
 
 Answer `y` to add the marketplace, then pick a scope. From a shell instead:
 
 ```text
-claude plugin install bench-for-claude --marketplace solon-joinx/bench-for-claude
+claude plugin install bench-for-claude --marketplace solonlin268/bench-for-claude
 ```
 
 **2. Sign in with each account once.** Run `/login` with each account you want

@@ -277,6 +277,16 @@ test('the expanded band\'s Switch button switches accounts', async ($, on) => {
   await ui.unmount()
 })
 
+test('the Switch buttons have no hotkey, so a digit typed into the prompt cannot switch', async ($, on) => {
+  machine(on, { view: 'expanded' })
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  const button = await ui.find({ key: `use-${HOME.id}` })
+  expect(button).toBeTruthy()
+  expect(button?.props.hotkey).toBeUndefined()
+  await ui.unmount()
+})
+
 test('the toggle button expands a compact band and collapses an expanded one', async ($, on) => {
   const { state, store } = machine(on)
 

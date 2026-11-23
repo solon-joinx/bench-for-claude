@@ -5,7 +5,7 @@ import type { Account } from '../types'
 import { readProfile, writeProfile } from './account'
 import { capture, installLive, isExpired, isSupported, readVault } from './credentials'
 
-// A switch writes the Keychain and then the global config; for that moment the
+// A switch writes Claude Code's login and then the global config; for that moment the
 // two disagree. Every session skips capturing logins while this is set, so no
 // session files one account's login under the other's id.
 const SWITCHING_UNTIL = 'switchingUntil'
@@ -35,9 +35,9 @@ export async function isSettling($: EngineInterface): Promise<boolean> {
 
 /**
  * Makes `target` the signed-in account for Claude Code on this machine: its
- * saved login goes into Claude Code's Keychain item and its profile into the
+ * saved login goes into Claude Code's credentials item and its profile into the
  * global config. The outgoing account's latest login is saved first. When the
- * config cannot be written, the Keychain item is put back as it was.
+ * config cannot be written, the credentials item is put back as it was.
  */
 export async function switchAccount(
   $: EngineInterface,

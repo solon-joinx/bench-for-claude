@@ -16,9 +16,10 @@ See every account's usage above the prompt, and switch accounts with one command
 ● work · Max 20x  5h 62% ↻1h20m  7d 31% ↻3d  │  ○ personal  5h reset  7d 18%  [Expand]
 ```
 
-> [!IMPORTANT]
-> **macOS only for now.** Switching uses the macOS Keychain, and the plugin has
-> only been tested on macOS. Linux and Windows support is planned.
+> [!NOTE]
+> **Works on macOS and Windows.** Each platform keeps saved logins where Claude
+> Code keeps its own: the Keychain on macOS, your Claude config folder on
+> Windows. Linux is not supported yet.
 
 ## The problem
 
@@ -31,8 +32,8 @@ switches the signed-in account without a browser.
 
 ## Quick start
 
-You need [Claude Code](https://code.claude.com) 2.1.311 or later on macOS,
-signed in with a Claude subscription (Pro, Max, Team or Enterprise).
+You need [Claude Code](https://code.claude.com) 2.1.311 or later on macOS or
+Windows, signed in with a Claude subscription (Pro, Max, Team or Enterprise).
 
 **1. Install.** At the prompt of a Claude Code terminal session:
 
@@ -120,7 +121,7 @@ asks you to `/login` with it again.
 **Signing in elsewhere is fine.** Each sign-in has its own login, so using an
 account on another machine does not affect the copy saved here.
 
-**Not supported yet:** Linux, Windows, and a custom `CLAUDE_CONFIG_DIR`.
+**Not supported yet:** Linux, and a custom `CLAUDE_CONFIG_DIR`.
 API-key and third-party-provider logins have no subscription usage to show.
 
 ## Language
@@ -133,16 +134,23 @@ With `auto` it follows Claude Code's `language` setting (for example
 
 - The plugin makes no network requests. Usage figures are the ones Claude Code
   already receives.
-- Logins stay in the macOS Keychain, one item per account under the service
-  `bench-for-claude`, holding that account's login, profile and alias. They are
-  written through `security` on stdin, so no token appears in a process's
-  arguments, and never logged or stored anywhere else.
-- A switch replaces only the `claudeAiOauth` entry of Claude Code's Keychain
-  item (other entries, such as other plugins' secrets, are kept) and only the
-  `oauthAccount` key of `~/.claude.json`. The whole Keychain item is backed up
-  first (`bench-for-claude` / `backup:before-switch`) and put back if the
-  config cannot be written.
-- `/accounts remove` deletes that account's saved login from the Keychain.
+- Each account's login, profile and alias are kept in one place, never logged
+  or stored anywhere else:
+  - **macOS:** the Keychain, one item per account under the service
+    `bench-for-claude`. They are written through `security` on stdin, so no
+    token appears in a process's arguments.
+  - **Windows:** one file per account in `%USERPROFILE%\.claude\bench-for-claude\`.
+    Like Claude Code's own `.credentials.json` beside it, they are plain JSON,
+    kept private by your profile folder's permissions.
+- A switch replaces only the `claudeAiOauth` entry of Claude Code's credentials
+  (the Keychain item, or `.credentials.json` on Windows; other entries, such
+  as other plugins' secrets, are kept) and only the `oauthAccount` key of
+  `~/.claude.json`. Claude Code's credentials are backed up first
+  (`bench-for-claude` / `backup:before-switch` in the Keychain, or
+  `backup-before-switch.json` on Windows) and put back if the config cannot be
+  written.
+- `/accounts remove` deletes that account's saved login (on Windows through
+  PowerShell's `Remove-Item`, since the plugin runtime has no file delete).
 
 ## Development
 
@@ -156,11 +164,12 @@ claude --plugin-dir .
 | --- | --- |
 | `hooks/register.tsx` | Event wiring: session start, measurements, `/accounts`, the band |
 | `hooks/band.tsx` | Drawing the band |
-| `hooks/usage.ts` | Windows, thresholds, durations, used-up detection |
+| `hooks/usage.ts` | Usage windows, thresholds, durations, used-up detection |
 | `hooks/account.ts` | Reading and writing the signed-in profile in `~/.claude.json` |
-| `hooks/credentials.ts` | The only code that touches the Keychain |
-| `hooks/switch.ts` | The switch: checks, backup, Keychain then config, rollback |
-| `hooks/registry.ts` | The plugin store: known accounts and readings, a cache of the Keychain |
+| `hooks/credentials.ts` | The only code that touches logins: the Keychain on macOS, files on Windows |
+| `hooks/platform.ts` | Which platform this is, the home folder, path separators |
+| `hooks/switch.ts` | The switch: checks, backup, login then config, rollback |
+| `hooks/registry.ts` | The plugin store: known accounts and readings, a cache of the vault |
 | `hooks/i18n.ts` | UI strings; the note at its top explains adding a language |
 | `types/index.d.ts` | The plugin's state contract |
 | `tests/` | Tests run by `claude plugin test` |

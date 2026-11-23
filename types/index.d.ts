@@ -21,6 +21,8 @@ export type Account = {
   plan?: string
   /** A short name the user gave this account (`/accounts name work`). */
   alias?: string
+  /** Its saved login expired or was revoked: it needs a fresh /login before a switch. */
+  needsLogin?: boolean
 }
 
 /** The last usage reading of one account. */

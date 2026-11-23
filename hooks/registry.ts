@@ -18,12 +18,28 @@ export async function loadRegistry($: EngineInterface): Promise<Registry> {
   return value && typeof value === 'object' ? (value as Registry) : {}
 }
 
-/** Adds or refreshes an account's profile, keeping the alias it was given. */
+/** Adds or refreshes an account's profile, keeping its alias and whether it needs a login. */
 export async function remember($: EngineInterface, account: Account): Promise<Account> {
   const registry = await loadRegistry($)
-  const merged: Account = { ...account, alias: registry[account.id]?.alias ?? account.alias }
-  await $.store.set(ACCOUNTS, { ...registry, [account.id]: merged })
+  const previous = registry[account.id]
+  const merged: Account = {
+    ...account,
+    alias: previous?.alias ?? account.alias,
+    ...(previous?.needsLogin ? { needsLogin: true } : {}),
+  }
+  if (JSON.stringify(previous) !== JSON.stringify(merged)) {
+    await $.store.set(ACCOUNTS, { ...registry, [account.id]: merged })
+  }
   return merged
+}
+
+/** Records whether the account's saved login needs a fresh /login. */
+export async function setNeedsLogin($: EngineInterface, id: string, needsLogin: boolean): Promise<void> {
+  const registry = await loadRegistry($)
+  const account = registry[id]
+  if (account === undefined || (account.needsLogin === true) === needsLogin) return
+  const { needsLogin: _, ...rest } = account
+  await $.store.set(ACCOUNTS, { ...registry, [id]: needsLogin ? { ...rest, needsLogin: true } : rest })
 }
 
 export async function setAlias($: EngineInterface, id: string, alias: string | undefined): Promise<void> {

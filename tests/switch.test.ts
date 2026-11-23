@@ -137,6 +137,7 @@ test('switching swaps the login, keeps other Keychain entries, and saves the out
   expect(config.numStartups).toBe(3)
   expect(store.has('switchingUntil')).toBe(false)
   expect(store.get('switchedAt')).toBe(NOW)
+  expect(store.get('pendingSwitch')).toEqual({ from: WORK.id, to: HOME.id, at: NOW })
 })
 
 test('a failed config write puts the Keychain item back', async ($, on) => {
@@ -164,6 +165,101 @@ test('an account with no saved login, or an expired one, is refused untouched', 
 
   expect(await run($, 'use me@work.example')).toMatch(/already signed in/)
   expect(keychain.get(`${LIVE}|me`)).toBe(original)
+})
+
+/** A login as Claude Code leaves it after a refused refresh (`invalid_grant`). */
+const cleared = { accessToken: '', refreshToken: '', expiresAt: 0 }
+
+test('a saved login that Claude Code emptied, or one marked dead, is refused and flagged', async ($, on) => {
+  const { keychain, files, store } = machine(on)
+  const original = JSON.stringify({ claudeAiOauth: login('work') })
+  keychain.set(`${LIVE}|me`, original)
+  files.set(CONFIG, JSON.stringify({ oauthAccount: profile(WORK) }))
+
+  keychain.set(`${VAULT}|${HOME.id}`, JSON.stringify({ oauth: cleared, profile: profile(HOME) }))
+  expect(await run($, 'use home')).toMatch(/no longer works/)
+
+  keychain.set(`${VAULT}|${HOME.id}`, JSON.stringify({ oauth: login('home'), profile: profile(HOME), deadAt: NOW - 1 }))
+  expect(await run($, 'use home')).toMatch(/no longer works/)
+
+  expect(keychain.get(`${LIVE}|me`)).toBe(original)
+  expect(store.has('pendingSwitch')).toBe(false)
+  expect((store.get('accounts') as Record<string, { needsLogin?: boolean }>)[HOME.id]?.needsLogin).toBe(true)
+  expect(await run($, 'list')).toMatch(/home .*needs \/login/)
+})
+
+/** Answers what a session start asks beneath the plugin; call before the first call on $. */
+const sessions = (on: On) => {
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('settings.read', () => ({ value: {} }))
+  on('session.usage', () => ({ value: { rateLimits: [] } }) as never)
+}
+
+/** Starts a session, which looks at the signed-in login once. */
+const start = ($: Engine) =>
+  $.session.start({ cwd: '/home/me' } as Parameters<Engine['session']['start']>[0])
+
+test('a pending switch to a login Claude Code emptied is undone, once, with a toast', async ($, on) => {
+  const { keychain, files, store, toasts } = machine(on)
+  sessions(on)
+  const pluginSecrets = { 'other@market': { token: 'keep-me' } }
+  keychain.set(`${LIVE}|me`, JSON.stringify({ claudeAiOauth: cleared, pluginSecrets }))
+  keychain.set(`${VAULT}|${WORK.id}`, JSON.stringify({ oauth: login('work'), profile: profile(WORK) }))
+  keychain.set(`${VAULT}|${HOME.id}`, JSON.stringify({ oauth: login('home'), profile: profile(HOME), alias: 'home' }))
+  files.set(CONFIG, JSON.stringify({ numStartups: 3, oauthAccount: profile(HOME) }, null, 2))
+  store.set('pendingSwitch', { from: WORK.id, to: HOME.id, at: NOW - 120_000 })
+
+  await start($)
+
+  const live = JSON.parse(keychain.get(`${LIVE}|me`)!)
+  expect(live.claudeAiOauth.refreshToken).toBe('refresh-work')
+  expect(live.pluginSecrets).toEqual(pluginSecrets)
+  const config = JSON.parse(files.get(CONFIG)!)
+  expect(config.oauthAccount.accountUuid).toBe(WORK.id)
+  expect(config.numStartups).toBe(3)
+
+  expect(JSON.parse(keychain.get(`${VAULT}|${HOME.id}`)!).deadAt).toBe(NOW)
+  expect(store.has('pendingSwitch')).toBe(false)
+  expect(store.get('switchedAt')).toBe(NOW)
+  expect((store.get('accounts') as Record<string, { needsLogin?: boolean }>)[HOME.id]?.needsLogin).toBe(true)
+  expect(toasts).toEqual([expect.stringMatching(/^The login for home was revoked, so switched back to me@work\.example/)])
+
+  await start($)
+  expect(toasts.length).toBe(1)
+})
+
+test('a login emptied with no switch pending is flagged and reported once, and nothing is switched', async ($, on) => {
+  const { keychain, files, store, toasts } = machine(on)
+  sessions(on)
+  keychain.set(`${LIVE}|me`, JSON.stringify({ claudeAiOauth: cleared }))
+  keychain.set(`${VAULT}|${WORK.id}`, JSON.stringify({ oauth: login('work'), profile: profile(WORK) }))
+  keychain.set(`${VAULT}|${HOME.id}`, JSON.stringify({ oauth: login('home'), profile: profile(HOME) }))
+  files.set(CONFIG, JSON.stringify({ oauthAccount: profile(HOME) }))
+
+  await start($)
+  await start($)
+
+  expect(JSON.parse(keychain.get(`${LIVE}|me`)!).claudeAiOauth).toEqual(cleared)
+  expect(JSON.parse(files.get(CONFIG)!).oauthAccount.accountUuid).toBe(HOME.id)
+  expect(JSON.parse(keychain.get(`${VAULT}|${HOME.id}`)!).deadAt).toBe(NOW)
+  expect(toasts).toEqual([expect.stringMatching(/^The login for home was revoked: sign in/)])
+  expect(store.has('switchedAt')).toBe(false)
+})
+
+test('signing in again replaces a dead login and clears the flag', async ($, on) => {
+  const { keychain, files, store } = machine(on)
+  sessions(on)
+  keychain.set(`${LIVE}|me`, JSON.stringify({ claudeAiOauth: login('home-new') }))
+  keychain.set(`${VAULT}|${HOME.id}`, JSON.stringify({ oauth: cleared, profile: profile(HOME), deadAt: NOW - 1 }))
+  files.set(CONFIG, JSON.stringify({ oauthAccount: profile(HOME) }))
+  store.set('accounts', { [WORK.id]: WORK, [HOME.id]: { ...HOME, needsLogin: true } })
+
+  await start($)
+
+  const entry = JSON.parse(keychain.get(`${VAULT}|${HOME.id}`)!)
+  expect(entry.oauth.refreshToken).toBe('refresh-home-new')
+  expect(entry.deadAt).toBeUndefined()
+  expect((store.get('accounts') as Record<string, { needsLogin?: boolean }>)[HOME.id]?.needsLogin).toBeUndefined()
 })
 
 test('on Windows, switching swaps the login in the credentials file and keeps the vault in files', async ($, on) => {
@@ -251,6 +347,28 @@ test('readings right after a switch are not recorded, later ones are', async ($,
   expect((store.get(`snapshot:${HOME.id}`) as { windows: { percentUsed: number }[] }).windows[0]?.percentUsed).toBe(40)
 })
 
+test('the first reading recorded after a switch confirms it; none is recorded for a dead login', async ($, on) => {
+  const { files, store } = machine(on)
+  on('session.measure', (_, e) => ({ changed: e.changed }))
+  files.set(CONFIG, JSON.stringify({ oauthAccount: profile(HOME) }))
+  store.set('pendingSwitch', { from: WORK.id, to: HOME.id, at: NOW - 10_000 })
+
+  store.set('switchedAt', NOW - 10_000)
+  await measure($, 40)
+  expect(store.has('pendingSwitch')).toBe(true)
+
+  // Requests may still be answered with another account's login: keep it apart.
+  store.set('switchedAt', NOW - 60_000)
+  store.set('accounts', { [WORK.id]: WORK, [HOME.id]: { ...HOME, needsLogin: true } })
+  await measure($, 90)
+  expect(store.has(`snapshot:${HOME.id}`)).toBe(false)
+  expect(store.has('pendingSwitch')).toBe(true)
+
+  store.set('accounts', { [WORK.id]: WORK, [HOME.id]: HOME })
+  await measure($, 40)
+  expect(store.has('pendingSwitch')).toBe(false)
+})
+
 const BAND = {
   plugin: 'bench-for-claude',
   component: 'AbovePrompt',
@@ -274,6 +392,16 @@ test('the expanded band\'s Switch button switches accounts', async ($, on) => {
 
   expect(toasts[0]).toMatch(/^Switched to home/)
   expect(JSON.parse(keychain.get(`${LIVE}|me`)!).claudeAiOauth.refreshToken).toBe('refresh-home')
+  await ui.unmount()
+})
+
+test('an account whose login needs a /login gets no Switch button', async ($, on) => {
+  const { store } = machine(on, { view: 'expanded' })
+  store.set('accounts', { [WORK.id]: WORK, [HOME.id]: { ...HOME, needsLogin: true } })
+  await run($, 'list')
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.find({ key: `use-${HOME.id}` })).toBeFalsy()
   await ui.unmount()
 })
 

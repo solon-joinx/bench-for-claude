@@ -45,6 +45,11 @@ export type VaultEntry = {
   /** Claude Code's `oauthAccount` block for this account, written back on a switch. */
   profile?: Profile
   alias?: string
+  /**
+   * When this login was found revoked. Kept until a new login replaces it, so
+   * a switch to the account is refused until then.
+   */
+  deadAt?: number
 }
 
 /**
@@ -251,16 +256,43 @@ export async function deleteVault($: EngineInterface, accountId: string): Promis
 /**
  * Saves the signed-in login and profile under `accountId` when they differ
  * from the vault's copy, keeping its alias. Logins rotate their refresh token,
- * so this runs on every measurement and tick.
+ * so this runs on every measurement and tick. A dead mark is kept until a
+ * working login with a new refresh token (a fresh /login) replaces the old one.
+ * Returns the entry as saved, or undefined when there is no login to save.
  */
-export async function capture($: EngineInterface, accountId: string, profile: Profile): Promise<void> {
+export async function capture(
+  $: EngineInterface,
+  accountId: string,
+  profile: Profile,
+): Promise<VaultEntry | undefined> {
   const live = await readLiveOAuth($)
-  if (live === undefined) return
+  if (live === undefined) return undefined
   const saved = await readVault($, accountId)
-  const next: VaultEntry = { ...saved, oauth: live, profile }
+  const { deadAt, ...rest }: Partial<VaultEntry> = saved ?? {}
+  const isRenewed = !isRevoked(live) && live.refreshToken !== saved?.oauth.refreshToken
+  const next: VaultEntry = { ...rest, oauth: live, profile, ...(deadAt !== undefined && !isRenewed ? { deadAt } : {}) }
   if (saved === undefined || JSON.stringify(saved) !== JSON.stringify(next)) {
     await writeVault($, accountId, next)
   }
+  return next
+}
+
+/**
+ * Marks the account's saved login as revoked. Returns false when it already
+ * was, or when there is no login to mark, so the person is told only once.
+ */
+export async function markDead(
+  $: EngineInterface,
+  accountId: string,
+  profile: Profile,
+  now: number,
+): Promise<boolean> {
+  const saved = await readVault($, accountId)
+  if (saved?.deadAt !== undefined) return false
+  const oauth = saved?.oauth ?? (await readLiveOAuth($))
+  if (oauth === undefined) return false
+  await writeVault($, accountId, { ...saved, oauth, profile: saved?.profile ?? profile, deadAt: now })
+  return true
 }
 
 /**
@@ -279,6 +311,23 @@ export async function installLive($: EngineInterface, oauth: OAuth): Promise<() 
   return async () => writeLiveRaw($, place, raw)
 }
 
-/** A saved login whose refresh token has expired needs a fresh /login. */
-export const isExpired = (oauth: OAuth, now: number): boolean =>
-  typeof oauth.refreshTokenExpiresAt === 'number' && oauth.refreshTokenExpiresAt <= now
+/**
+ * Whether Claude Code gave up on this login. When a refresh is refused
+ * (`invalid_grant`: signed out on claude.ai, or revoked), Claude Code empties
+ * the tokens in its item; a login that hit its time limit also carries
+ * `loginEnded`.
+ */
+export const isRevoked = (oauth: OAuth): boolean =>
+  oauth.refreshToken === '' || oauth.loginEnded !== undefined
+
+/**
+ * Whether a saved login can be switched to. `expired`: its refresh token's
+ * lifetime is over. `revoked`: Claude Code found it refused, or it was marked
+ * dead. Either way the account needs a fresh /login.
+ */
+export const loginState = (entry: VaultEntry, now: number): 'ok' | 'expired' | 'revoked' => {
+  const expiresAt = entry.oauth.refreshTokenExpiresAt
+  if (typeof expiresAt === 'number' && expiresAt <= now) return 'expired'
+  if (entry.deadAt !== undefined || isRevoked(entry.oauth)) return 'revoked'
+  return 'ok'
+}
